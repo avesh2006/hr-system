@@ -1,0 +1,8 @@
+{
+  "name": "AI HR Assistant Dashboard",
+  "description": "A SaaS-grade HR dashboard to help employees check attendance, salary slips, and request leave, while enabling admins to manage analytics, exports, and employee records. Features a Gemini-powered AI assistant for contextual help.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
