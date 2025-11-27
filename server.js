@@ -17,7 +17,9 @@ let dbConnectionPromise;
 const connectDB = async () => {
     if (db) return db; // Return if connection already exists
     if (!mongoUri) {
-        throw new Error("FATAL ERROR: MONGO_URI environment variable is not set.");
+        console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
+        // Don't throw here, let the middleware handle the response
+        return Promise.reject(new Error("MONGO_URI environment variable is not set."));
     }
     const client = new MongoClient(mongoUri);
     try {
@@ -28,7 +30,9 @@ const connectDB = async () => {
         return db;
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        throw err;
+        // Reset db state on failure
+        db = null; 
+        return Promise.reject(err);
     }
 };
 
@@ -39,9 +43,15 @@ const ensureDbConnection = async (req, res, next) => {
             dbConnectionPromise = connectDB();
         }
         await dbConnectionPromise;
+        if (!db) { // Explicitly check if the db object is available
+             throw new Error("Database connection failed and was not established.");
+        }
         next();
     } catch (error) {
-        res.status(503).json({ message: "Database connection failed. Please try again later." });
+        console.error("DATABASE MIDDLEWARE ERROR:", error.message);
+        // Invalidate the promise on failure so we can retry connecting on the next request
+        dbConnectionPromise = null; 
+        res.status(503).json({ message: "A server error occurred: Could not connect to the database. Please ensure it's configured correctly and network access is allowed." });
     }
 };
 
