@@ -28,7 +28,7 @@ const connectDB = async () => {
         await seedDatabase();
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        process.exit(1);
+        process.exit(1); // Exit if DB connection fails on startup
     }
 };
 
@@ -51,6 +51,10 @@ const formatTime = (date) => date.toTimeString().split(' ')[0].substring(0, 5);
 
 // --- AUDIT LOG HELPER ---
 const logAction = async (user, action, details = '') => {
+    if (!db) {
+        console.error("Database not initialized, cannot log action.");
+        return;
+    }
     const logEntry = {
         timestamp: new Date(),
         userId: user._id,
@@ -361,18 +365,12 @@ User Query: "${prompt}"
     }
 });
 
-
-const startServer = async () => {
-    await connectDB();
-    app.listen(port, () => {
-        console.log(`HR Portal backend listening at http://localhost:${port}`);
-    });
-};
-
-startServer();
-
 // --- DATABASE SEEDING ---
 async function seedDatabase() {
+    if (!db) {
+        console.log("DB not connected, skipping seed.");
+        return;
+    }
     const usersCollection = db.collection('users');
     const userCount = await usersCollection.countDocuments();
     if (userCount > 0) {
@@ -418,3 +416,12 @@ async function seedDatabase() {
 
     console.log('Seeding complete.');
 }
+
+// Connect to the database when the module is initialized.
+connectDB().catch(err => {
+    console.error(err);
+    process.exit(1);
+});
+
+// Export the app for Vercel's serverless environment
+module.exports = app;
