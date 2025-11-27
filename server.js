@@ -11,46 +11,43 @@ const port = process.env.PORT || 3001;
 
 // --- DATABASE SETUP ---
 const mongoUri = process.env.MONGO_URI;
-let db;
 let dbConnectionPromise;
 
 const connectDB = async () => {
-    if (db) return db; // Return if connection already exists
+    if (dbConnectionPromise) {
+        return dbConnectionPromise;
+    }
     if (!mongoUri) {
         console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
-        // Don't throw here, let the middleware handle the response
-        return Promise.reject(new Error("MONGO_URI environment variable is not set."));
+        throw new Error("Server configuration error: Database URI is not set.");
     }
     const client = new MongoClient(mongoUri);
-    try {
-        await client.connect();
-        db = client.db("hr_portal");
-        console.log("Successfully connected to MongoDB Atlas.");
-        await seedDatabase();
-        return db;
-    } catch (err) {
-        console.error("Failed to connect to MongoDB Atlas", err);
-        // Reset db state on failure
-        db = null; 
-        return Promise.reject(err);
-    }
+    dbConnectionPromise = client.connect()
+        .then(client => {
+            console.log("Successfully connected to MongoDB Atlas.");
+            const db = client.db("hr_portal");
+            // Seed the database only after a successful connection
+            seedDatabase(db).catch(err => console.error("Seeding failed:", err));
+            return db;
+        })
+        .catch(err => {
+            console.error("Failed to connect to MongoDB Atlas", err);
+            dbConnectionPromise = null; // Reset promise on failure to allow retry
+            throw err;
+        });
+
+    return dbConnectionPromise;
 };
+
 
 // Middleware to ensure DB is connected before handling requests
 const ensureDbConnection = async (req, res, next) => {
     try {
-        if (!dbConnectionPromise) {
-            dbConnectionPromise = connectDB();
-        }
-        await dbConnectionPromise;
-        if (!db) { // Explicitly check if the db object is available
-             throw new Error("Database connection failed and was not established.");
-        }
+        const db = await connectDB();
+        req.db = db; // Attach db instance to the request object
         next();
     } catch (error) {
         console.error("DATABASE MIDDLEWARE ERROR:", error.message);
-        // Invalidate the promise on failure so we can retry connecting on the next request
-        dbConnectionPromise = null; 
         res.status(503).json({ message: "A server error occurred: Could not connect to the database. Please ensure it's configured correctly and network access is allowed." });
     }
 };
@@ -77,7 +74,7 @@ const formatDate = (date) => date.toISOString().split('T')[0];
 const formatTime = (date) => date.toTimeString().split(' ')[0].substring(0, 5);
 
 // --- AUDIT LOG HELPER ---
-const logAction = async (user, action, details = '') => {
+const logAction = async (db, user, action, details = '') => {
     if (!db) {
         console.error("Database not initialized, cannot log action.");
         return;
@@ -97,10 +94,10 @@ const logAction = async (user, action, details = '') => {
 // Auth
 app.post('/api/auth/login', async (req, res) => {
     const { email, pass } = req.body;
-    const user = await db.collection('users').findOne({ email });
+    const user = await req.db.collection('users').findOne({ email });
     // In a real app, passwords should be hashed. For this example, we're comparing plain text.
     if (user && user.password === pass) {
-        await logAction(user, 'User Login');
+        await logAction(req.db, user, 'User Login');
         const { password, ...userWithoutPassword } = user;
         res.json({ ...userWithoutPassword, id: user._id });
     } else {
@@ -110,7 +107,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/signup', async (req, res) => {
     const { name, email, pass, role } = req.body;
-    const existingUser = await db.collection('users').findOne({ email });
+    const existingUser = await req.db.collection('users').findOne({ email });
     if (existingUser) {
         return res.status(400).json({ message: 'An account with this email already exists.' });
     }
@@ -122,9 +119,9 @@ app.post('/api/auth/signup', async (req, res) => {
         team: 'Unassigned',
         joinDate: formatDate(new Date())
     };
-    const result = await db.collection('users').insertOne(newUser);
-    const createdUser = await db.collection('users').findOne({ _id: result.insertedId });
-    await logAction(createdUser, 'User Signed Up');
+    const result = await req.db.collection('users').insertOne(newUser);
+    const createdUser = await req.db.collection('users').findOne({ _id: result.insertedId });
+    await logAction(req.db, createdUser, 'User Signed Up');
     
     const { password, ...userWithoutPassword } = createdUser;
     res.status(201).json({ ...userWithoutPassword, id: createdUser._id });
@@ -137,7 +134,7 @@ app.put('/api/users/:id', async (req, res) => {
     
     if (!ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid user ID.' });
 
-    const user = await db.collection('users').findOne({ _id: new ObjectId(id) });
+    const user = await req.db.collection('users').findOne({ _id: new ObjectId(id) });
     if (!user) return res.status(404).json({ message: 'User not found.' });
     
     delete updates.role; // Prevent role escalation
@@ -148,10 +145,10 @@ app.put('/api/users/:id', async (req, res) => {
         updateDoc.$set.password = newPassword;
     }
     
-    await db.collection('users').updateOne({ _id: new ObjectId(id) }, updateDoc);
-    const updatedUser = await db.collection('users').findOne({ _id: new ObjectId(id) });
+    await req.db.collection('users').updateOne({ _id: new ObjectId(id) }, updateDoc);
+    const updatedUser = await req.db.collection('users').findOne({ _id: new ObjectId(id) });
     
-    await logAction(updatedUser, 'Updated User Profile');
+    await logAction(req.db, updatedUser, 'Updated User Profile');
     const { password, ...userWithoutPassword } = updatedUser;
     res.json({ ...userWithoutPassword, id: updatedUser._id });
 });
@@ -160,7 +157,7 @@ app.get('/api/users/:id', async (req, res) => {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid user ID.' });
 
-    const user = await db.collection('users').findOne({ _id: new ObjectId(id) });
+    const user = await req.db.collection('users').findOne({ _id: new ObjectId(id) });
     if (user) {
         const { password, ...userWithoutPassword } = user;
         res.json({ ...userWithoutPassword, id: user._id });
@@ -172,62 +169,62 @@ app.get('/api/users/:id', async (req, res) => {
 // Admin
 app.get('/api/admin/dashboard-data', async (req, res) => {
     const todayStr = formatDate(new Date());
-    const totalEmployees = await db.collection('users').countDocuments({ role: 'employee' });
-    const presentToday = await db.collection('attendance').countDocuments({ date: todayStr, status: 'Present' });
-    const onLeave = await db.collection('attendance').countDocuments({ date: todayStr, status: 'On Leave' });
+    const totalEmployees = await req.db.collection('users').countDocuments({ role: 'employee' });
+    const presentToday = await req.db.collection('attendance').countDocuments({ date: todayStr, status: 'Present' });
+    const onLeave = await req.db.collection('attendance').countDocuments({ date: todayStr, status: 'On Leave' });
     res.json({
         stats: { totalEmployees, presentToday, onLeave }
     });
 });
 
 app.get('/api/admin/employees', async (req, res) => {
-    const users = await db.collection('users').find({}, { projection: { password: 0 } }).toArray();
+    const users = await req.db.collection('users').find({}, { projection: { password: 0 } }).toArray();
     res.json(users.map(u => ({ ...u, id: u._id })));
 });
 
 app.get('/api/admin/attendance', async (req, res) => {
-    const attendance = await db.collection('attendance').find().sort({ date: -1 }).toArray();
+    const attendance = await req.db.collection('attendance').find().sort({ date: -1 }).toArray();
     res.json(attendance.map(a => ({ ...a, id: a._id })));
 });
 
 app.get('/api/admin/salaries', async (req, res) => {
-    const salaries = await db.collection('salaries').find().toArray();
+    const salaries = await req.db.collection('salaries').find().toArray();
     res.json(salaries.map(s => ({ ...s, id: s._id })));
 });
 
 app.get('/api/admin/gamification-settings', async (req, res) => {
-    let settings = await db.collection('settings').findOne({ name: 'gamification' });
+    let settings = await req.db.collection('settings').findOne({ name: 'gamification' });
     if (!settings) {
         settings = { name: 'gamification', pointsForPunctuality: 10, pointsForPerfectWeek: 50 };
-        await db.collection('settings').insertOne(settings);
+        await req.db.collection('settings').insertOne(settings);
     }
     res.json(settings);
 });
 
 app.put('/api/admin/gamification-settings', async (req, res) => {
-    const adminUser = await db.collection('users').findOne({ role: 'admin' });
-    if (adminUser) await logAction(adminUser, 'Updated Gamification Settings');
+    const adminUser = await req.db.collection('users').findOne({ role: 'admin' });
+    if (adminUser) await logAction(req.db, adminUser, 'Updated Gamification Settings');
     
     const { pointsForPunctuality, pointsForPerfectWeek } = req.body;
-    const result = await db.collection('settings').updateOne(
+    const result = await req.db.collection('settings').updateOne(
         { name: 'gamification' },
         { $set: { pointsForPunctuality, pointsForPerfectWeek } },
         { upsert: true }
     );
-    const updatedSettings = await db.collection('settings').findOne({ name: 'gamification' });
+    const updatedSettings = await req.db.collection('settings').findOne({ name: 'gamification' });
     res.json(updatedSettings);
 });
 
 app.get('/api/admin/audit-logs', async (req, res) => {
-    const logs = await db.collection('audit_logs').find().sort({ timestamp: -1 }).limit(100).toArray();
+    const logs = await req.db.collection('audit_logs').find().sort({ timestamp: -1 }).limit(100).toArray();
     res.json(logs.map(l => ({ ...l, id: l._id })));
 });
 
 app.get('/api/admin/export/employees', async (req, res) => {
-    const adminUser = await db.collection('users').findOne({ role: 'admin' });
-    if (adminUser) await logAction(adminUser, 'Exported Employee Data (CSV)');
+    const adminUser = await req.db.collection('users').findOne({ role: 'admin' });
+    if (adminUser) await logAction(req.db, adminUser, 'Exported Employee Data (CSV)');
     
-    const users = await db.collection('users').find({}, { projection: { password: 0 } }).toArray();
+    const users = await req.db.collection('users').find({}, { projection: { password: 0 } }).toArray();
     const headers = ['ID', 'Name', 'Email', 'Role', 'Team', 'Join Date'];
     const csvRows = [
         headers.join(','),
@@ -240,9 +237,9 @@ app.get('/api/admin/export/employees', async (req, res) => {
 });
 
 app.get('/api/admin/leave-requests', async (req, res) => {
-    const requests = await db.collection('leave_requests').find().sort({ startDate: -1 }).toArray();
+    const requests = await req.db.collection('leave_requests').find().sort({ startDate: -1 }).toArray();
     for (let req of requests) {
-        const user = await db.collection('users').findOne({ _id: new ObjectId(req.employeeId) });
+        const user = await req.db.collection('users').findOne({ _id: new ObjectId(req.employeeId) });
         req.employeeName = user ? user.name : 'Unknown';
     }
     res.json(requests.map(r => ({ ...r, id: r._id })));
@@ -255,15 +252,15 @@ app.put('/api/admin/leave-requests/:requestId', async (req, res) => {
     if (!ObjectId.isValid(requestId)) return res.status(400).json({ message: 'Invalid request ID.' });
     if (!['Approved', 'Rejected'].includes(status)) return res.status(400).json({ message: 'Invalid status.' });
 
-    const result = await db.collection('leave_requests').updateOne({ _id: new ObjectId(requestId) }, { $set: { status } });
+    const result = await req.db.collection('leave_requests').updateOne({ _id: new ObjectId(requestId) }, { $set: { status } });
     if (result.matchedCount === 0) return res.status(404).json({ message: 'Leave request not found.' });
 
-    const updatedRequest = await db.collection('leave_requests').findOne({ _id: new ObjectId(requestId) });
+    const updatedRequest = await req.db.collection('leave_requests').findOne({ _id: new ObjectId(requestId) });
 
-    const adminUser = await db.collection('users').findOne({ role: 'admin' });
-    const employee = await db.collection('users').findOne({ _id: new ObjectId(updatedRequest.employeeId) });
+    const adminUser = await req.db.collection('users').findOne({ role: 'admin' });
+    const employee = await req.db.collection('users').findOne({ _id: new ObjectId(updatedRequest.employeeId) });
     if (adminUser) {
-        await logAction(adminUser, `Leave Request ${status}`, `Request for ${employee ? employee.name : 'Unknown'}`);
+        await logAction(req.db, adminUser, `Leave Request ${status}`, `Request for ${employee ? employee.name : 'Unknown'}`);
     }
 
     res.json({ ...updatedRequest, id: updatedRequest._id });
@@ -273,14 +270,14 @@ app.put('/api/admin/leave-requests/:requestId', async (req, res) => {
 app.get('/api/employees/:userId/dashboard-data', async (req, res) => {
     const { userId } = req.params;
     const todayStr = formatDate(new Date());
-    let todayAttendance = await db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
+    let todayAttendance = await req.db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
     
     if (!todayAttendance) {
-        const user = await db.collection('users').findOne({ _id: new ObjectId(userId) });
+        const user = await req.db.collection('users').findOne({ _id: new ObjectId(userId) });
         todayAttendance = { employeeId: userId, employeeName: user?.name, date: todayStr, checkIn: null, checkOut: null, status: 'Absent' };
     }
     
-    const gamification = await db.collection('gamification').findOne({ employeeId: userId }) || { points: 0, badges: [], leaderboardRank: 'N/A' };
+    const gamification = await req.db.collection('gamification').findOne({ employeeId: userId }) || { points: 0, badges: [], leaderboardRank: 'N/A' };
     
     res.json({ todayAttendance, gamification });
 });
@@ -290,12 +287,12 @@ app.post('/api/employees/:userId/attendance', async (req, res) => {
     const { type, photo, location } = req.body;
     const todayStr = formatDate(new Date());
 
-    let record = await db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
+    let record = await req.db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
 
     if (type === 'check-in') {
         if (record && record.status === 'Present') return res.status(400).json({ message: 'You have already checked in today.' });
         
-        const user = await db.collection('users').findOne({ _id: new ObjectId(userId) });
+        const user = await req.db.collection('users').findOne({ _id: new ObjectId(userId) });
         const newRecordData = {
             employeeId: userId,
             employeeName: user.name,
@@ -308,18 +305,18 @@ app.post('/api/employees/:userId/attendance', async (req, res) => {
         };
 
         if (record) {
-            await db.collection('attendance').updateOne({ _id: record._id }, { $set: newRecordData });
+            await req.db.collection('attendance').updateOne({ _id: record._id }, { $set: newRecordData });
         } else {
-            await db.collection('attendance').insertOne(newRecordData);
+            await req.db.collection('attendance').insertOne(newRecordData);
         }
-        const finalRecord = await db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
+        const finalRecord = await req.db.collection('attendance').findOne({ employeeId: userId, date: todayStr });
         res.json({ ...finalRecord, id: finalRecord._id });
     } else if (type === 'check-out') {
         if (!record) return res.status(400).json({ message: 'You have not checked in today.' });
         if (record.checkOut) return res.status(400).json({ message: 'You have already checked out today.' });
         
-        await db.collection('attendance').updateOne({ _id: record._id }, { $set: { checkOut: formatTime(new Date()) } });
-        const finalRecord = await db.collection('attendance').findOne({ _id: record._id });
+        await req.db.collection('attendance').updateOne({ _id: record._id }, { $set: { checkOut: formatTime(new Date()) } });
+        const finalRecord = await req.db.collection('attendance').findOne({ _id: record._id });
         res.json({ ...finalRecord, id: finalRecord._id });
     } else {
         return res.status(400).json({ message: 'Invalid attendance action.' });
@@ -327,15 +324,15 @@ app.post('/api/employees/:userId/attendance', async (req, res) => {
 });
 
 app.get('/api/employees/:userId/attendance', async (req, res) => {
-    const attendance = await db.collection('attendance').find({ employeeId: req.params.userId }).sort({ date: -1 }).toArray();
+    const attendance = await req.db.collection('attendance').find({ employeeId: req.params.userId }).sort({ date: -1 }).toArray();
     res.json(attendance.map(a => ({ ...a, id: a._id })));
 });
 app.get('/api/employees/:userId/salaries', async (req, res) => {
-    const salaries = await db.collection('salaries').find({ employeeId: req.params.userId }).toArray();
+    const salaries = await req.db.collection('salaries').find({ employeeId: req.params.userId }).toArray();
     res.json(salaries.map(s => ({ ...s, id: s._id })));
 });
 app.get('/api/employees/:userId/leave-requests', async (req, res) => {
-    const requests = await db.collection('leave_requests').find({ employeeId: req.params.userId }).sort({ startDate: -1 }).toArray();
+    const requests = await req.db.collection('leave_requests').find({ employeeId: req.params.userId }).sort({ startDate: -1 }).toArray();
     res.json(requests.map(r => ({ ...r, id: r._id })));
 });
 
@@ -343,13 +340,13 @@ app.post('/api/employees/:userId/leave-requests', async (req, res) => {
     const { userId } = req.params;
     const { startDate, endDate, reason } = req.body;
     
-    const user = await db.collection('users').findOne({ _id: new ObjectId(userId) });
+    const user = await req.db.collection('users').findOne({ _id: new ObjectId(userId) });
     if (!user) return res.status(404).json({ message: 'User not found' });
     
     const newRequest = { employeeId: userId, startDate, endDate, reason, status: 'Pending' };
-    const result = await db.collection('leave_requests').insertOne(newRequest);
+    const result = await req.db.collection('leave_requests').insertOne(newRequest);
     
-    await logAction(user, 'Submitted Leave Request', `From ${startDate} to ${endDate}`);
+    await logAction(req.db, user, 'Submitted Leave Request', `From ${startDate} to ${endDate}`);
     res.status(201).json({ ...newRequest, id: result.insertedId });
 });
 
@@ -360,6 +357,7 @@ app.post('/api/ai/chat', async (req, res) => {
     if (!prompt || !userInfo) return res.status(400).json({ message: 'Prompt and user are required.' });
 
     try {
+        const db = req.db;
         const attendance = await db.collection('attendance').find({ employeeId: userInfo.id }).sort({ date: -1 }).limit(5).toArray();
         const salary = await db.collection('salaries').find({ employeeId: userInfo.id }).sort({ year: -1, month: -1 }).limit(2).toArray();
         const leaveBalance = await db.collection('leave_balances').findOne({ employeeId: userInfo.id }) || { annual: 15, sick: 10 };
@@ -393,7 +391,7 @@ User Query: "${prompt}"
 });
 
 // --- DATABASE SEEDING ---
-async function seedDatabase() {
+async function seedDatabase(db) {
     if (!db) {
         console.log("DB not connected, skipping seed.");
         return;
@@ -401,7 +399,7 @@ async function seedDatabase() {
     const usersCollection = db.collection('users');
     const userCount = await usersCollection.countDocuments();
     if (userCount > 0) {
-        console.log('Database already seeded. Skipping.');
+        // console.log('Database already seeded. Skipping.');
         return;
     }
 
@@ -446,12 +444,13 @@ async function seedDatabase() {
 
 
 // Start the server for local development
-if (!process.env.VERCEL) {
-    dbConnectionPromise = connectDB();
-    app.listen(port, () => {
-        console.log(`Server listening at http://localhost:${port}`);
-    });
+if (require.main === module) {
+  app.listen(port, () => {
+    console.log(`Server listening at http://localhost:${port}`);
+    connectDB();
+  });
 }
+
 
 // Export the app for Vercel
 module.exports = app;
