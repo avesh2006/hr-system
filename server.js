@@ -11,24 +11,22 @@ const port = process.env.PORT || 3001;
 
 // --- DATABASE SETUP ---
 const mongoUri = process.env.MONGO_URI;
-if (!mongoUri) {
-    console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
-    process.exit(1);
-}
-
-const client = new MongoClient(mongoUri);
 let db;
 
 const connectDB = async () => {
+    if (db) return; // Return if connection already exists
+    if (!mongoUri) {
+        throw new Error("FATAL ERROR: MONGO_URI environment variable is not set.");
+    }
+    const client = new MongoClient(mongoUri);
     try {
         await client.connect();
-        db = client.db("hr_portal"); // You can name your database here
+        db = client.db("hr_portal");
         console.log("Successfully connected to MongoDB Atlas.");
-        // Seed database if it's empty
         await seedDatabase();
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        process.exit(1); // Exit if DB connection fails on startup
+        throw err; // Re-throw error to be caught by the starter function
     }
 };
 
@@ -417,11 +415,20 @@ async function seedDatabase() {
     console.log('Seeding complete.');
 }
 
-// Connect to the database when the module is initialized.
-connectDB().catch(err => {
-    console.error(err);
-    process.exit(1);
-});
 
-// Export the app for Vercel's serverless environment
-module.exports = app;
+// A wrapper function to connect to the DB and then export the app
+// This ensures the database is connected before Vercel tries to use the app
+const startApp = async () => {
+    await connectDB();
+    return app;
+};
+
+// For local development, we still want to listen on a port
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(port, () => {
+        console.log(`Server listening at http://localhost:${port}`);
+    });
+}
+
+// Export a promise that resolves to the app for Vercel
+module.exports = startApp();

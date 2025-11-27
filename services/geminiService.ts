@@ -1,6 +1,7 @@
+
 import { User } from '../types';
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = '/api';
 
 export const getAIResponse = async (prompt: string, user: User): Promise<string> => {
     try {
