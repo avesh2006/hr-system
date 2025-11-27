@@ -26,7 +26,8 @@ const connectDB = async () => {
         await seedDatabase();
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        process.exit(1); // Exit process if DB connection fails
+        // Do NOT exit the process in a serverless environment
+        throw err; // Re-throw the error to be caught by the init function
     }
 };
 
@@ -418,12 +419,19 @@ async function seedDatabase() {
 
 // A single async function to initialize everything
 const init = async () => {
-  await connectDB();
-  // We only start listening locally if not in a serverless environment
-  if (!process.env.VERCEL) {
-    app.listen(port, () => {
-      console.log(`Server listening at http://localhost:${port}`);
-    });
+  try {
+    await connectDB();
+    // We only start listening locally if not in a serverless environment
+    if (!process.env.VERCEL) {
+      app.listen(port, () => {
+        console.log(`Server listening at http://localhost:${port}`);
+      });
+    }
+  } catch (error) {
+    console.error("Application failed to initialize:", error);
+    if (!process.env.VERCEL) {
+        process.exit(1);
+    }
   }
 };
 
