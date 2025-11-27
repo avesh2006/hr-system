@@ -10,7 +10,9 @@ import {
     AuditLog,
 } from '../types';
 
-const API_BASE_URL = 'http://192.168.31.179/api';
+// Use a relative path for the API base URL.
+// This works for both local development (with a proxy) and production deployment.
+const API_BASE_URL = '/api';
 
 const apiFetch = async <T>(endpoint: string, options: RequestInit = {}): Promise<T> => {
     try {
@@ -33,7 +35,7 @@ const apiFetch = async <T>(endpoint: string, options: RequestInit = {}): Promise
         return response.json();
     } catch (error: any) {
         if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
-             throw new Error('Connection failed. Is the backend server running on port 3001? Please start it with `npm start` in a separate terminal.');
+             throw new Error('Connection failed. Is the backend server running? Please start it with `npm start` in a separate terminal.');
         }
         throw error;
     }
