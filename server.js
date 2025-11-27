@@ -1,8 +1,8 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
 const { MongoClient, ObjectId } = require('mongodb');
 
@@ -44,10 +44,6 @@ if (process.env.API_KEY) {
     console.warn("API_KEY environment variable not set. AI Assistant will not function.");
 }
 
-// --- SERVE STATIC FRONTEND ---
-// This serves the built React app
-app.use(express.static(path.join(__dirname, 'dist')));
-
 
 // --- HELPERS ---
 const formatDate = (date) => date.toISOString().split('T')[0];
@@ -65,7 +61,7 @@ const logAction = async (user, action, details = '') => {
     await db.collection('audit_logs').insertOne(logEntry);
 };
 
-// --- API ENDPOINTS ---
+// --- API ENDPOINTS (This server is now API-only) ---
 
 // Auth
 app.post('/api/auth/login', async (req, res) => {
@@ -339,10 +335,19 @@ app.post('/api/ai/chat', async (req, res) => {
         const gamification = await db.collection('gamification').findOne({ employeeId: userInfo.id }) || { points: 0, badges: [], rank: 'N/A' };
 
         const fullPrompt = `
-            You are an AI HR Assistant... (Full prompt as before)
-            ...
-            User Query: "${prompt}"
-        `;
+You are an AI HR Assistant integrated into a SaaS-grade HR dashboard. Your role is to help employees check attendance, salary slips, and request leave, while enabling admins to manage analytics, exports, and employee records. Always respond in a professional, concise tone, and provide step-by-step guidance.
+
+Here is the current user's data for context:
+- User Name: ${userInfo.name}
+- User Role: ${userInfo.role}
+- Recent Attendance: ${JSON.stringify(attendance, null, 2)}
+- Recent Salary Slips: ${JSON.stringify(salary, null, 2)}
+- Leave Balance: ${JSON.stringify(leaveBalance, null, 2)}
+- Gamification Status: ${JSON.stringify(gamification, null, 2)}
+
+Based on this context, answer the following user query. Be helpful and concise.
+User Query: "${prompt}"
+`;
         
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -356,11 +361,6 @@ app.post('/api/ai/chat', async (req, res) => {
     }
 });
 
-// --- CATCH-ALL FOR FRONTEND ---
-// This serves the index.html for any request that doesn't match an API route
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
 
 const startServer = async () => {
     await connectDB();
