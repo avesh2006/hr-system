@@ -11,32 +11,31 @@ const port = process.env.PORT || 3001;
 
 // --- DATABASE SETUP (Vercel-ready & Professional Grade) ---
 const mongoUri = process.env.MONGO_URI;
-let dbConnectionPromise;
+let dbConnectionPromise = null;
 
 const connectDB = () => {
+    // If a connection promise already exists, reuse it. This prevents creating multiple connections.
     if (dbConnectionPromise) {
         return dbConnectionPromise;
     }
-    if (!mongoUri) {
-        console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
-        // Make the promise reject to be handled by middleware
-        dbConnectionPromise = Promise.reject(new Error("Server configuration error: Database URI is not set."));
-        return dbConnectionPromise;
-    }
-
-    // This promise will be created once and reused for all invocations
+    
+    // Create a new connection promise.
     dbConnectionPromise = (async () => {
+        if (!mongoUri) {
+            console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
+            throw new Error("Server configuration error: Database URI is not set.");
+        }
         try {
             const client = new MongoClient(mongoUri);
             await client.connect();
             console.log("Successfully connected to MongoDB Atlas.");
             const db = client.db("hr_portal");
             await seedDatabase(db);
-            return db; // Resolve with the db connection
+            return db; // The promise resolves with the database connection.
         } catch (err) {
             console.error("Failed to connect to MongoDB Atlas", err);
-            dbConnectionPromise = null; // Reset promise on failure to allow retry on the next request
-            // Propagate the error to be caught by the middleware
+            // If connection fails, reset the promise. This allows the next request to try connecting again.
+            dbConnectionPromise = null;
             throw new Error("Failed to connect to the database.");
         }
     })();
@@ -44,16 +43,18 @@ const connectDB = () => {
     return dbConnectionPromise;
 };
 
-// Immediately attempt to connect when the serverless function starts
+// Immediately attempt to connect when the serverless function starts up (cold start).
 connectDB();
 
-// Middleware to ensure DB is connected before handling any API request
+// Middleware to ensure the database is connected before handling any API request.
 const ensureDbConnection = async (req, res, next) => {
     try {
-        // Await the singleton promise
-        req.db = await dbConnectionPromise;
+        // Get the connection promise and wait for it to resolve.
+        req.db = await connectDB();
+        // If it resolves, proceed to the API route handler.
         next();
     } catch (error) {
+        // If the promise rejects, it means the database is not available.
         console.error("DATABASE CONNECTION FAILED IN MIDDLEWARE:", error.message);
         res.status(503).json({ message: "A server error occurred: Could not connect to the database. Please ensure it's configured correctly and network access is allowed." });
     }
@@ -64,7 +65,7 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
 
-// Apply the DB connection middleware to all API routes
+// Apply the DB connection middleware to all API routes.
 app.use('/api', ensureDbConnection);
 
 
