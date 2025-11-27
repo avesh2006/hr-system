@@ -26,7 +26,7 @@ const connectDB = async () => {
         await seedDatabase();
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        throw err; // Re-throw error to be caught by the starter function
+        process.exit(1); // Exit process if DB connection fails
     }
 };
 
@@ -416,19 +416,18 @@ async function seedDatabase() {
 }
 
 
-// A wrapper function to connect to the DB and then export the app
-// This ensures the database is connected before Vercel tries to use the app
-const startApp = async () => {
-    await connectDB();
-    return app;
+// A single async function to initialize everything
+const init = async () => {
+  await connectDB();
+  // We only start listening locally if not in a serverless environment
+  if (!process.env.VERCEL) {
+    app.listen(port, () => {
+      console.log(`Server listening at http://localhost:${port}`);
+    });
+  }
 };
 
-// For local development, we still want to listen on a port
-if (process.env.NODE_ENV !== 'production') {
-    app.listen(port, () => {
-        console.log(`Server listening at http://localhost:${port}`);
-    });
-}
+init();
 
-// Export a promise that resolves to the app for Vercel
-module.exports = startApp();
+// Export the app for Vercel
+module.exports = app;
