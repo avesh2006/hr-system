@@ -19,11 +19,6 @@
       "dest": "server.js"
     },
     {
-      "src": "/assets/(.*)",
-      "handle": "filesystem"
-    },
-    {
-      "src": "/vite.svg",
       "handle": "filesystem"
     },
     {
