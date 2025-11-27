@@ -9,48 +9,48 @@ const { MongoClient, ObjectId } = require('mongodb');
 const app = express();
 const port = process.env.PORT || 3001;
 
-// --- DATABASE SETUP ---
+// --- DATABASE SETUP (Vercel-ready) ---
 const mongoUri = process.env.MONGO_URI;
 let dbConnectionPromise;
 
-const connectDB = async () => {
+const connectDB = () => {
     if (dbConnectionPromise) {
         return dbConnectionPromise;
     }
     if (!mongoUri) {
         console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
-        throw new Error("Server configuration error: Database URI is not set.");
+        return Promise.reject(new Error("Server configuration error: Database URI is not set."));
     }
-    const client = new MongoClient(mongoUri);
-    dbConnectionPromise = client.connect()
-        .then(client => {
+
+    dbConnectionPromise = new Promise(async (resolve, reject) => {
+        try {
+            const client = new MongoClient(mongoUri);
+            await client.connect();
             console.log("Successfully connected to MongoDB Atlas.");
             const db = client.db("hr_portal");
-            // Seed the database only after a successful connection
-            seedDatabase(db).catch(err => console.error("Seeding failed:", err));
-            return db;
-        })
-        .catch(err => {
+            await seedDatabase(db);
+            resolve(db);
+        } catch (err) {
             console.error("Failed to connect to MongoDB Atlas", err);
-            dbConnectionPromise = null; // Reset promise on failure to allow retry
-            throw err;
-        });
+            dbConnectionPromise = null; // Reset promise on failure to allow retry on next request
+            reject(err);
+        }
+    });
 
     return dbConnectionPromise;
 };
 
-
 // Middleware to ensure DB is connected before handling requests
 const ensureDbConnection = async (req, res, next) => {
     try {
-        const db = await connectDB();
-        req.db = db; // Attach db instance to the request object
+        req.db = await connectDB();
         next();
     } catch (error) {
         console.error("DATABASE MIDDLEWARE ERROR:", error.message);
         res.status(503).json({ message: "A server error occurred: Could not connect to the database. Please ensure it's configured correctly and network access is allowed." });
     }
 };
+
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
@@ -399,7 +399,6 @@ async function seedDatabase(db) {
     const usersCollection = db.collection('users');
     const userCount = await usersCollection.countDocuments();
     if (userCount > 0) {
-        // console.log('Database already seeded. Skipping.');
         return;
     }
 
@@ -443,12 +442,19 @@ async function seedDatabase(db) {
 }
 
 
-// Start the server for local development
+// Start the server for local development, ensuring DB is connected first
 if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
-    connectDB();
-  });
+  (async () => {
+    try {
+      await connectDB();
+      app.listen(port, () => {
+        console.log(`Server listening at http://localhost:${port}`);
+      });
+    } catch (err) {
+      console.error("Failed to connect to database on startup. Server not started.", err);
+      process.exit(1);
+    }
+  })();
 }
 
 
