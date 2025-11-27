@@ -12,9 +12,10 @@ const port = process.env.PORT || 3001;
 // --- DATABASE SETUP ---
 const mongoUri = process.env.MONGO_URI;
 let db;
+let dbConnectionPromise;
 
 const connectDB = async () => {
-    if (db) return; // Return if connection already exists
+    if (db) return db; // Return if connection already exists
     if (!mongoUri) {
         throw new Error("FATAL ERROR: MONGO_URI environment variable is not set.");
     }
@@ -24,16 +25,33 @@ const connectDB = async () => {
         db = client.db("hr_portal");
         console.log("Successfully connected to MongoDB Atlas.");
         await seedDatabase();
+        return db;
     } catch (err) {
         console.error("Failed to connect to MongoDB Atlas", err);
-        // Do NOT exit the process in a serverless environment
-        throw err; // Re-throw the error to be caught by the init function
+        throw err;
+    }
+};
+
+// Middleware to ensure DB is connected before handling requests
+const ensureDbConnection = async (req, res, next) => {
+    try {
+        if (!dbConnectionPromise) {
+            dbConnectionPromise = connectDB();
+        }
+        await dbConnectionPromise;
+        next();
+    } catch (error) {
+        res.status(503).json({ message: "Database connection failed. Please try again later." });
     }
 };
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
+
+// Apply the DB connection middleware to all API routes
+app.use('/api', ensureDbConnection);
+
 
 // --- GEMINI SETUP ---
 let ai;
@@ -417,25 +435,13 @@ async function seedDatabase() {
 }
 
 
-// A single async function to initialize everything
-const init = async () => {
-  try {
-    await connectDB();
-    // We only start listening locally if not in a serverless environment
-    if (!process.env.VERCEL) {
-      app.listen(port, () => {
+// Start the server for local development
+if (!process.env.VERCEL) {
+    dbConnectionPromise = connectDB();
+    app.listen(port, () => {
         console.log(`Server listening at http://localhost:${port}`);
-      });
-    }
-  } catch (error) {
-    console.error("Application failed to initialize:", error);
-    if (!process.env.VERCEL) {
-        process.exit(1);
-    }
-  }
-};
-
-init();
+    });
+}
 
 // Export the app for Vercel
 module.exports = app;
