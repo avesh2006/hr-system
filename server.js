@@ -19,10 +19,12 @@ const connectDB = () => {
     }
     if (!mongoUri) {
         console.error("FATAL ERROR: MONGO_URI environment variable is not set.");
-        // Reject the promise to be handled by middleware, instead of crashing
-        return Promise.reject(new Error("Server configuration error: Database URI is not set."));
+        // Make the promise reject to be handled by middleware
+        dbConnectionPromise = Promise.reject(new Error("Server configuration error: Database URI is not set."));
+        return dbConnectionPromise;
     }
 
+    // This promise will be created once and reused for all invocations
     dbConnectionPromise = (async () => {
         try {
             const client = new MongoClient(mongoUri);
@@ -30,7 +32,7 @@ const connectDB = () => {
             console.log("Successfully connected to MongoDB Atlas.");
             const db = client.db("hr_portal");
             await seedDatabase(db);
-            return db; // This promise resolves with the db connection
+            return db; // Resolve with the db connection
         } catch (err) {
             console.error("Failed to connect to MongoDB Atlas", err);
             dbConnectionPromise = null; // Reset promise on failure to allow retry on the next request
@@ -42,13 +44,17 @@ const connectDB = () => {
     return dbConnectionPromise;
 };
 
+// Immediately attempt to connect when the serverless function starts
+connectDB();
+
 // Middleware to ensure DB is connected before handling any API request
 const ensureDbConnection = async (req, res, next) => {
     try {
-        req.db = await connectDB();
+        // Await the singleton promise
+        req.db = await dbConnectionPromise;
         next();
     } catch (error) {
-        console.error("DATABASE CONNECTION FAILED:", error.message);
+        console.error("DATABASE CONNECTION FAILED IN MIDDLEWARE:", error.message);
         res.status(503).json({ message: "A server error occurred: Could not connect to the database. Please ensure it's configured correctly and network access is allowed." });
     }
 };
@@ -441,14 +447,6 @@ async function seedDatabase(db) {
     await db.collection('settings').insertOne({ name: 'gamification', pointsForPunctuality: 10, pointsForPerfectWeek: 50 });
 
     console.log('Seeding complete.');
-}
-
-
-// Start the server for local development
-if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
-  });
 }
 
 
